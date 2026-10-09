@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Operation Sky Guard</title>
+<style>
+:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#14130c}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0;background:var(--bg)}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;color:#efe6d2}
+canvas{width:min(100%,calc((100vh - 70px)*1.6));aspect-ratio:8/5;touch-action:none;display:block;background:#2e2d20}
+#dash,#fire{display:none;padding:12px 28px;font:bold 16px inherit;border:2px solid #6ee7d8;background:transparent;color:#6ee7d8;border-radius:10px}
+@media(pointer:coarse){#dash,#fire{display:block}}
+#home{position:fixed;inset:0;z-index:5;background:radial-gradient(ellipse at 50% 30%,#3a3724 0,#1d1c12 70%);display:flex;overflow:auto;padding:max(16px,env(safe-area-inset-top,0px)) 16px max(16px,env(safe-area-inset-bottom,0px));box-sizing:border-box}
+#home .card{max-width:560px;width:100%;margin:auto;background:rgba(24,26,16,.92);border:1px solid #5a5436;border-radius:14px;padding:28px;box-sizing:border-box}
+#home h1{margin:0 0 8px;font-size:34px}
+#home h2{margin:22px 0 8px;font-size:18px;color:#e9b44c}
+#home p,#home li{line-height:1.5;color:#d8d0bc;max-width:60ch}
+#home ul{padding-left:20px;margin:0}
+#home td{padding:3px 18px 3px 0;color:#d8d0bc}#home td:first-child{color:#efe6d2;font-weight:bold}
+#play,#howto{margin-top:24px;margin-right:12px;padding:12px 40px;font:bold 20px 'Trebuchet MS',sans-serif;background:#e9b44c;color:#0c1519;border:0;border-radius:10px;cursor:pointer}
+#play:focus-visible,#howto:focus-visible{outline:3px solid #fff;outline-offset:3px}
+#howto{background:transparent;color:#e9b44c;border:2px solid #e9b44c;padding:12px 38px}
+</style></head><body>
+<div id="home"><div class="card">
+<h1>Operation Sky Guard</h1>
+<p>Bombers are overhead and enemy soldiers are closing in on foot. Lead stranded civilians into the bunker before they are lost.</p>
+<div id="info" style="display:none"><h2>How to play</h2>
+<ul>
+<li>Walk up to a civilian and they follow you. Each follower slows you by 3% (up to 60%).</li>
+<li>Enter the glowing bunker zone to drop off your whole group. Rescue the quota shown at the top right before the raid timer ends. It starts at 7 and grows by 2 each level up to 21.</li>
+<li>Red rings show where bombs will land. Get out before they fill.</li>
+<li>Red soldiers hunt civilians and hurt you on contact. Shoot them down.</li>
+<li>Rubble blocks you and your shots but shields you from blasts. Mud halves your speed.</li>
+<li>You have 100 HP and the bunker has 500. Lose either and the raid fails.</li>
+</ul>
+<h2>Controls</h2>
+<table>
+<tr><td>Move</td><td>WASD, arrow keys, or hold on touch screens</td></tr>
+<tr><td>Shoot</td><td>Space (hold to keep firing, aims at the nearest soldier)</td></tr>
+<tr><td>Dash</td><td>Shift (short burst, 2 second cooldown)</td></tr>
+<tr><td>Pause</td><td>P (then M for the menu)</td></tr>
+</table>
+</div>
+<div><button id="howto" aria-expanded="false">Instructions</button><button id="play">Play</button></div>
+<p id="bestline"></p>
+</div></div>
+<canvas id="c" width="960" height="600"></canvas>
+<div style="display:flex;gap:12px"><button id="dash">Dash</button><button id="fire">Fire</button></div>
+<script>
+const W=960,H=600,c=document.getElementById('c'),g=c.getContext('2d');
+document.getElementById('play').addEventListener('click',()=>{level=1;proceed()});
+document.getElementById('howto').addEventListener('click',e=>{const i=document.getElementById('info'),open=i.style.display=='none';i.style.display=open?'block':'none';e.currentTarget.setAttribute('aria-expanded',open);if(open)i.scrollIntoView({behavior:'smooth',block:'nearest'})});
+const GAME_CONFIG={minRescueQuota:21,basePlayerSpeed:200,herdDragPenaltyPerCivilian:.03,maxDragPenalty:.6,raidDuration:90};
+const BX=480,BY=530,BR=85;let QUOTA=GAME_CONFIG.minRescueQuota,BLAST=60;
+let S='title',P,civs,bombs,planes,fx,rescued,lost,bunker,t,planeT,civT,keys={},ptr=null,paused=false,shake=0,won=false,why='',status='',level=1,raidT=90,OB=[],MUD=[],foes=[],bl=[],foeT=0,fireT=0,kills=0,best=null;
+try{best=parseFloat(localStorage.getItem('skyguard-best'))||null}catch(e){}
+const rnd=(a,b)=>a+Math.random()*(b-a),clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),dist=(a,b,x,y)=>Math.hypot(a-x,b-y);
+let ac;function beep(f,d=.1,type='square',v=.04){try{ac=ac||new AudioContext();const o=ac.createOscillator(),n=ac.createGain();o.type=type;o.frequency.value=f;n.gain.value=v;n.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.connect(n);n.connect(ac.destination);o.start();o.stop(ac.currentTime+d)}catch(e){}}
+
+const LEVELS=[
+{name:'Dawn Patrol',gap:5,bombs:2,fuse:1.25,blast:60,spd:200,civ:6,time:100,tip:'Space shoots soldiers. Leave the red rings before they fill.'},
+{name:'Rush Hour',gap:4.2,bombs:3,fuse:1.1,blast:66,spd:235,civ:5,time:100,tip:'Faster planes and bigger blasts.'},
+{name:'Carpet Run',gap:3.7,bombs:4,fuse:1.05,blast:70,spd:250,civ:5,time:95,cluster:1,tip:'Each bomb now brings two more.'},
+{name:'Hunter Sky',gap:3.3,bombs:4,fuse:1,blast:74,spd:270,civ:4,time:95,cluster:1,lead:1,tip:'Bombers aim where you are heading. Change direction.'},
+{name:'Blackout',gap:2.9,bombs:5,fuse:.95,blast:78,spd:300,civ:4,time:90,cluster:1,lead:1,tip:'Everything at once.'}];
+const LV=()=>LEVELS[Math.min(level,LEVELS.length)-1];
+let BG=null;
+function makeBG(){const o=document.createElement('canvas');o.width=W;o.height=H;const b=o.getContext('2d');let s=11;const r=(a,z)=>a+((s=s*16807%2147483647)/2147483647)*(z-a);
+ let gr=b.createLinearGradient(0,0,0,H);gr.addColorStop(0,'#2b2a1d');gr.addColorStop(1,'#3a3724');b.fillStyle=gr;b.fillRect(0,0,W,H);
+ for(let i=0;i<2200;i++){b.fillStyle=['#46422c','#262519','#4f4a33','#33301f'][i%4];b.globalAlpha=.5;b.fillRect(r(0,W),r(0,H),r(1,3),r(1,3))}b.globalAlpha=1;
+ b.strokeStyle='rgba(20,18,10,.35)';b.lineWidth=4;b.setLineDash([14,6]);
+ for(const y of [150,300]){b.beginPath();b.moveTo(0,y);b.bezierCurveTo(300,y-60,600,y+60,W,y-20);b.stroke();b.beginPath();b.moveTo(0,y+14);b.bezierCurveTo(300,y-46,600,y+74,W,y-6);b.stroke()}b.setLineDash([]);
+ b.lineJoin='round';b.strokeStyle='#4d472f';b.lineWidth=14;b.beginPath();b.moveTo(0,420);for(let x=40;x<=W;x+=60)b.lineTo(x,420+((x/60)%2?12:-8));b.stroke();b.strokeStyle='#17160e';b.lineWidth=7;b.stroke();
+ for(let i=0;i<16;i++){const x=r(30,W-30),y=r(80,H-30),d=r(14,38),cg=b.createRadialGradient(x,y,d*.2,x,y,d*1.25);cg.addColorStop(0,'rgba(10,9,5,.75)');cg.addColorStop(.7,'rgba(25,23,14,.55)');cg.addColorStop(.85,'rgba(95,88,60,.45)');cg.addColorStop(1,'rgba(95,88,60,0)');b.fillStyle=cg;b.beginPath();b.arc(x,y,d*1.25,0,6.28);b.fill()}
+ b.strokeStyle='#8a8a80';b.lineWidth=1.5;for(const [x0,x1] of [[0,330],[630,W]]){const y=510;b.beginPath();b.moveTo(x0,y);for(let x=x0;x<x1;x+=10){b.lineTo(x+5,y-6);b.lineTo(x+10,y+6)}b.stroke();b.fillStyle='#3a2f1c';for(let x=x0+10;x<x1;x+=60)b.fillRect(x,y-12,4,24)}
+ for(let row=0;row<2;row++)for(let i=0;i<7;i++){const x=BX-77+i*22+row*11,y=BY-52+row*11;b.fillStyle='#8b7b52';b.strokeStyle='#4a3f26';b.lineWidth=1;b.beginPath();b.roundRect(x,y,21,10,4);b.fill();b.stroke()}
+ for(const [x,y,a] of [[140,250,-.3],[790,330,.4]]){const sg=b.createRadialGradient(x,y,5,x,y,70);sg.addColorStop(0,'rgba(0,0,0,.55)');sg.addColorStop(1,'rgba(0,0,0,0)');b.fillStyle=sg;b.beginPath();b.arc(x,y,70,0,6.28);b.fill();b.save();b.translate(x,y);b.rotate(a);b.fillStyle='#14130c';b.fillRect(-36,-18,72,36);b.fillStyle='#24231a';b.fillRect(-36,-18,72,7);b.fillRect(-36,11,72,7);b.beginPath();b.arc(-4,0,12,0,6.28);b.fill();b.fillRect(4,-2.5,40,5);b.restore()}
+ const vg=b.createRadialGradient(W/2,H/2,H*.35,W/2,H/2,W*.65);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.5)');b.fillStyle=vg;b.fillRect(0,0,W,H);
+ const hg=b.createLinearGradient(0,0,0,75);hg.addColorStop(0,'rgba(0,0,0,.45)');hg.addColorStop(1,'rgba(0,0,0,0)');b.fillStyle=hg;b.fillRect(0,0,W,75);BG=o}
+const dif=()=>t+Math.max(0,level-LEVELS.length)*40;
+const blocked=(x,y,r)=>OB.some(o=>x>o.x-r&&x<o.x+o.w+r&&y>o.y-r&&y<o.y+o.h+r);
+const cover=(a,b,c,d)=>{for(let i=1;i<8;i++)if(blocked(a+(c-a)*i/8,b+(d-b)*i/8,0))return true;return false};
+function stepFoot(dt){
+ civs.forEach(v=>{let f=null,fd=150;foes.forEach(e=>{const d=dist(e.x,e.y,v.x,v.y);if(d<fd){fd=d;f=e}});let sp=40;
+  if(f){const d=fd||1;v.dx=(v.x-f.x)/d;v.dy=(v.y-f.y)/d;sp=90}else{v.wt-=dt;if(v.wt<=0){const a=rnd(0,6.28);v.dx=Math.cos(a);v.dy=Math.sin(a);v.wt=rnd(1,3)}}
+  const nx=v.x+v.dx*sp*dt,ny=v.y+v.dy*sp*dt;
+  if(nx<20||nx>W-20||blocked(nx,v.y,9)){v.dx*=-1;v.wt=0}else v.x=nx;
+  if(ny<60||ny>H-20||blocked(v.x,ny,9)){v.dy*=-1;v.wt=0}else v.y=ny});
+ foeT-=dt;if(foeT<=0&&foes.length<Math.min(8,2+level)){foes.push({x:Math.random()<.5?-15:W+15,y:rnd(80,420),hp:2,cd:0});foeT=Math.max(4,12-2*Math.min(level,5))}
+ const es=55+10*Math.min(level,6);
+ foes.forEach(e=>{let tg=P,td=1e9;civs.concat(P.f).forEach(v=>{const d=dist(e.x,e.y,v.x,v.y);if(d<td){td=d;tg=v}});
+  const d=dist(e.x,e.y,tg.x,tg.y)||1,nx=e.x+(tg.x-e.x)/d*es*dt,ny=e.y+(tg.y-e.y)/d*es*dt;
+  if(!blocked(nx,e.y,10))e.x=nx;if(!blocked(e.x,ny,10))e.y=ny;
+  const kill=a=>a.filter(v=>{if(dist(v.x,v.y,e.x,e.y)<17){lost++;pop(v.x,v.y,'#ff5a36',8);beep(140,.12,'sawtooth',.05);return false}return true});
+  civs=kill(civs);P.f=kill(P.f);
+  if(dist(e.x,e.y,P.x,P.y)<20&&P.inv<=0){P.hp-=10;P.inv=.8;shake=.2;beep(120,.15,'sawtooth',.06);if(P.hp<=0){P.hp=0;evaluateLevelEnd()}}});
+ fireT-=dt;
+ if(keys[' ']&&fireT<=0){fireT=.22;let tx=P.ld[0],ty=P.ld[1],bd=420;foes.forEach(e=>{const d=dist(e.x,e.y,P.x,P.y);if(d<bd&&e.x>0&&e.x<W&&e.y>0&&e.y<H){bd=d;tx=(e.x-P.x)/d;ty=(e.y-P.y)/d}});bl.push({x:P.x,y:P.y,vx:tx*650,vy:ty*650,l:.8});beep(900,.05,'square',.03)}
+ bl.forEach(b=>{b.x+=b.vx*dt;b.y+=b.vy*dt;b.l-=dt;if(blocked(b.x,b.y,0)||b.x<0||b.x>W||b.y<0||b.y>H)b.l=0;
+  foes.forEach(e=>{if(b.l>0&&dist(b.x,b.y,e.x,e.y)<14){b.l=0;e.hp--;pop(e.x,e.y,'#ffd166',5);if(e.hp<=0){pop(e.x,e.y,'#ff8a3d',12);beep(200,.1,'sawtooth',.05);kills++}}})});
+ bl=bl.filter(b=>b.l>0);foes=foes.filter(e=>e.hp>0)}
+function genObs(){OB=[];MUD=[];const n=3+Math.min(level,6),m=1+Math.min(level,5);
+ const free=(x,y,r)=>dist(x,y,BX,BY)>BR+r+10&&dist(x,y,P.x,P.y)>r+60&&OB.every(o=>dist(o.x+o.w/2,o.y+o.h/2,x,y)>r+50);
+ for(let i=0,k=0;i<n&&k<200;k++){const w=rnd(50,110),h=rnd(26,60),x=rnd(60,W-60-w),y=rnd(80,440-h);if(free(x+w/2,y+h/2,Math.max(w,h)/2)){OB.push({x,y,w,h});i++}}
+ for(let i=0,k=0;i<m&&k<100;k++){const x=rnd(80,W-80),y=rnd(90,470),r=rnd(45,70);if(free(x,y,r)){MUD.push({x,y,r});i++}}}
+function herdSpeed(){let d=P.f.length*GAME_CONFIG.herdDragPenaltyPerCivilian;if(d>GAME_CONFIG.maxDragPenalty)d=GAME_CONFIG.maxDragPenalty;return GAME_CONFIG.basePlayerSpeed*(1-d)}
+function depositCivilians(){if(!P.f.length)return;rescued+=P.f.length;P.f.forEach(f=>pop(f.x,f.y,'#9be58b'));beep(600+Math.min(rescued,QUOTA)*15,.25,'triangle');P.f=[];checkLevelStatus()}
+function checkLevelStatus(){if(rescued>=QUOTA)evaluateLevelEnd()}
+function evaluateLevelEnd(){if(P.hp<=0||bunker<=0)return end('GAME_OVER','The bunker or player was destroyed during the raid!');if(rescued>=QUOTA)return end('VICTORY','You rescued '+rescued+' people. Level '+(level+1)+' unlocked.');end('RETRY','You rescued '+rescued+' citizens, but need at least '+QUOTA+'.')}
+function proceed(){document.getElementById('home').style.display='none';if(S=='over'&&status=='VICTORY')level++;reset()}
+function showHome(){S='title';paused=false;ptr=null;level=1;status='';document.getElementById('info').style.display='none';document.getElementById('home').style.display='flex';if(best)document.getElementById('bestline').textContent='Best win: '+best.toFixed(1)+'s'}
+function reset(){P={x:BX,y:400,hp:100,dash:0,dashT:0,inv:0,dl:0,f:[],ld:[0,-1]};civs=[];bombs=[];planes=[];fx=[];rescued=0;lost=0;QUOTA=Math.min(GAME_CONFIG.minRescueQuota,5+level*2);bunker=500;t=0;raidT=Math.round(30+QUOTA*3.2);BLAST=LV().blast;planeT=2;foes=[];bl=[];foeT=5;fireT=0;kills=0;civT=0;paused=false;genObs();for(let i=0;i<LV().civ;i++)spawnCiv();S='play'}
+function spawnCiv(){let x,y,k=0;do{x=rnd(50,W-50);y=rnd(70,400);k++}while((dist(x,y,P.x,P.y)<150||blocked(x,y,14))&&k<40);civs.push({x,y,b:rnd(0,6),dx:0,dy:0,wt:0})}
+function pop(x,y,col,n=10){for(let i=0;i<n;i++){const a=rnd(0,6.28),s=rnd(40,160);fx.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:rnd(.3,.7),c:col})}}
+function end(st,r){if(S=='over')return;S='over';status=st;const w=won=st=='VICTORY';why=r;beep(w?880:110,.6,w?'triangle':'sawtooth',.08);if(w&&(!best||t<best)){best=t;try{localStorage.setItem('skyguard-best',t)}catch(e){}}}
+
+function dropBomb(p){const r=Math.random();let x,y;
+ if(r<.35+.03*Math.min(level,6)){const k=LV().lead&&P.mv?.9:0,v=herdSpeed();x=P.x+P.ld[0]*v*k+rnd(-30,30);y=P.y+P.ld[1]*v*k+rnd(-30,30)}
+ else if(r<.6+.03*Math.min(level,6)){x=BX+rnd(-90,90);y=BY+rnd(-40,40)}
+ else{const a=P.f.concat(civs);const v=a.length?a[Math.floor(Math.random()*a.length)]:{x:rnd(80,W-80),y:rnd(80,H-80)};x=v.x+rnd(-20,20);y=v.y+rnd(-20,20)}
+ const f=Math.max(.6,LV().fuse-dif()/300);for(let i=0;i<(LV().cluster?3:1);i++){const a=i?rnd(0,6.28):0,d=i?rnd(70,95):0;bombs.push({x:clamp(x+Math.cos(a)*d,20,W-20),y:clamp(y+Math.sin(a)*d,20,H-20),sx:p.x,sy:p.y,t:0,f:f+i*.12})}}
+
+function explode(b){shake=.35;beep(90,.35,'sawtooth',.08);pop(b.x,b.y,'#ff8a3d',22);fx.push({x:b.x,y:b.y,ring:1,l:.35});
+ if(dist(P.x,P.y,b.x,b.y)<BLAST+10&&!cover(b.x,b.y,P.x,P.y)&&P.inv<=0){P.hp-=25;P.inv=.8;if(P.hp<=0){P.hp=0;evaluateLevelEnd()}}
+ const hit=a=>{const k=[];a.forEach(v=>{if(dist(v.x,v.y,b.x,b.y)<BLAST&&!cover(b.x,b.y,v.x,v.y)){lost++;pop(v.x,v.y,'#ff5a36',8)}else k.push(v)});return k};
+ P.f=hit(P.f);civs=hit(civs);
+ if(dist(b.x,b.y,BX,BY)<BLAST+50){bunker-=30+5*Math.min(level,5);if(bunker<=0){bunker=0;evaluateLevelEnd()}}}
+
+function update(dt){
+ t+=dt;raidT-=dt;if(raidT<=0){evaluateLevelEnd();return}
+ let dx=(keys.ArrowRight||keys.d?1:0)-(keys.ArrowLeft||keys.a?1:0),dy=(keys.ArrowDown||keys.s?1:0)-(keys.ArrowUp||keys.w?1:0);
+ if(ptr&&!dx&&!dy){const ex=ptr.x-P.x,ey=ptr.y-P.y,d=Math.hypot(ex,ey);if(d>8){dx=ex/d;dy=ey/d}}
+ const m=Math.hypot(dx,dy);if(m>1){dx/=m;dy/=m}P.mv=m>0;if(m>0)P.ld=[dx,dy];
+ let sp=herdSpeed();
+ if(P.dashT>0){sp=520;dx=P.ld[0];dy=P.ld[1];P.dashT-=dt;P.inv=Math.max(P.inv,.05)}
+ P.dash=Math.max(0,P.dash-dt);P.inv=Math.max(0,P.inv-dt);
+ if(MUD.some(u=>dist(P.x,P.y,u.x,u.y)<u.r)&&P.dashT<=0)sp*=.5;
+ const nx=clamp(P.x+dx*sp*dt,14,W-14),ny=clamp(P.y+dy*sp*dt,14,H-14);if(!blocked(nx,P.y,11))P.x=nx;if(!blocked(P.x,ny,11))P.y=ny;
+ let px=P.x,py=P.y;
+ P.f.forEach(f=>{const d=dist(f.x,f.y,px,py);if(d>24){const k=(d-24)/d*Math.min(1,dt*8);f.x+=(px-f.x)*k;f.y+=(py-f.y)*k}px=f.x;py=f.y});
+ for(let i=civs.length-1;i>=0;i--)if(dist(civs[i].x,civs[i].y,P.x,P.y)<24){P.f.push(civs.splice(i,1)[0]);beep(520,.08,'triangle')}
+ P.dl-=dt;
+ if(dist(P.x,P.y,BX,BY)<BR&&P.f.length)depositCivilians();
+ civT-=dt;if(civT<=0&&civs.length<LV().civ+2){spawnCiv();civT=1.8+.2*Math.min(level,6)}
+ stepFoot(dt);
+ planeT-=dt;if(planeT<=0){const d=Math.random()<.5?1:-1;planes.push({x:d>0?-60:W+60,y:rnd(70,420),vx:d*rnd(LV().spd,LV().spd+40),n:Math.min(9,LV().bombs+Math.floor(dif()/60)),dr:.4});planeT=Math.max(1.8,LV().gap-dif()/60);beep(70,.5,'sawtooth',.03)}
+ planes.forEach(p=>{p.x+=p.vx*dt;p.dr-=dt;if(p.n>0&&p.dr<=0&&p.x>0&&p.x<W){dropBomb(p);p.n--;p.dr=.45}});
+ planes=planes.filter(p=>p.x>-120&&p.x<W+120);
+ bombs=bombs.filter(b=>{b.t+=dt;if(b.t>=b.f&&S=='play'){explode(b);return false}return b.t<b.f});
+ fx.forEach(f=>{f.l-=dt;if(!f.ring){f.x+=f.vx*dt;f.y+=f.vy*dt}});fx=fx.filter(f=>f.l>0);
+}
+
+function bar(x,y,w,v,col,label){g.fillStyle='rgba(0,0,0,.45)';g.fillRect(x,y,w,12);g.fillStyle=col;g.fillRect(x,y,w*clamp(v,0,1),12);g.fillStyle='#efe6d2';g.font='12px "Trebuchet MS",sans-serif';g.textAlign='left';g.fillText(label,x,y-5)}
+function txt(s,x,y,sz,col='#efe6d2'){g.fillStyle=col;g.font='bold '+sz+'px "Trebuchet MS",sans-serif';g.textAlign='center';g.fillText(s,x,y)}
+
+function draw(){
+ g.save();if(shake>0)g.translate(rnd(-1,1)*shake*20,rnd(-1,1)*shake*20);
+ g.fillStyle='#2e2d20';g.fillRect(-20,-20,W+40,H+40);if(BG)g.drawImage(BG,0,0);
+ const T=performance.now()/1000;for(let i=0;i<2;i++){g.save();g.translate(i?W-70:70,H+10);g.rotate(Math.sin(T*.45+i*2.2)*.55+(i?.25:-.25));g.fillStyle='rgba(255,244,200,.05)';g.beginPath();g.moveTo(-6,0);g.lineTo(-110,-760);g.lineTo(110,-760);g.lineTo(6,0);g.fill();g.restore()}
+ 
+ if(P){
+  g.setLineDash([8,8]);g.strokeStyle='#e9b44c';g.lineWidth=2;g.fillStyle='rgba(233,180,76,.08)';g.beginPath();g.arc(BX,BY,BR,0,6.28);g.fill();g.stroke();g.setLineDash([]);
+  g.fillStyle=bunker>250?'#8a8f7a':bunker>120?'#b0894a':'#a8472f';g.fillRect(BX-45,BY-22,90,44);g.fillStyle='#0c1519';g.fillRect(BX-14,BY-6,28,28);
+  MUD.forEach(u=>{g.fillStyle='rgba(30,22,10,.65)';g.beginPath();g.arc(u.x,u.y,u.r,0,6.28);g.fill()});OB.forEach(o=>{g.fillStyle='#5d5b52';g.fillRect(o.x,o.y,o.w,o.h);g.fillStyle='#7d7a6c';g.fillRect(o.x,o.y,o.w,5)});
+  civs.forEach(v=>{const p=Math.sin(t*4+v.b);g.strokeStyle='rgba(239,230,210,.5)';g.beginPath();g.arc(v.x,v.y,11+p*3,0,6.28);g.stroke();g.fillStyle='#efe6d2';g.beginPath();g.arc(v.x,v.y,7,0,6.28);g.fill()});
+  P.f.forEach(v=>{g.fillStyle='#f4c95d';g.beginPath();g.arc(v.x,v.y,7,0,6.28);g.fill()});
+  bombs.forEach(b=>{const k=b.t/b.f;g.strokeStyle='rgba(255,90,54,.9)';g.lineWidth=2;g.beginPath();g.arc(b.x,b.y,BLAST,0,6.28);g.stroke();g.fillStyle='rgba(255,90,54,'+(.1+.25*k)+')';g.beginPath();g.arc(b.x,b.y,BLAST*k,0,6.28);g.fill();
+   g.fillStyle='#0c1519';g.beginPath();g.arc(b.sx+(b.x-b.sx)*k,b.sy+(b.y-b.sy)*k,3+4*k,0,6.28);g.fill()});
+  if(!(P.inv>0&&Math.floor(t*20)%2)){g.fillStyle=P.dashT>0?'#ffffff':'#6ee7d8';g.beginPath();g.arc(P.x,P.y,11,0,6.28);g.fill()}
+  foes.forEach(e=>{g.fillStyle='#b5342a';g.beginPath();g.arc(e.x,e.y,10,0,6.28);g.fill();g.fillStyle='#1a0c0a';g.fillRect(e.x-4,e.y-3,8,3)});g.fillStyle='#ffd166';bl.forEach(b=>{g.beginPath();g.arc(b.x,b.y,3,0,6.28);g.fill()});
+  planes.forEach(p=>{g.save();g.translate(p.x,p.y);g.scale(Math.sign(p.vx),1);g.fillStyle='#070b0d';g.beginPath();g.moveTo(28,0);g.lineTo(-14,-20);g.lineTo(-8,0);g.lineTo(-14,20);g.closePath();g.fill();g.restore()});
+  fx.forEach(f=>{if(f.ring){g.strokeStyle='rgba(255,200,120,'+f.l*2+')';g.lineWidth=4;g.beginPath();g.arc(f.x,f.y,BLAST*(1.3-f.l*2),0,6.28);g.stroke()}else{g.fillStyle=f.c;g.globalAlpha=clamp(f.l*2,0,1);g.fillRect(f.x-2,f.y-2,4,4);g.globalAlpha=1}});
+  bar(16,28,160,P.hp/100,'#6ee7d8','You');bar(196,28,200,bunker/500,'#e9b44c','Bunker');bar(416,28,120,P.dash>0?1-P.dash/2.2:1,P.dash>0?'#5b6b70':'#ffffff','Dash');g.textAlign='left';g.fillStyle='#efe6d2';g.font='bold 14px "Trebuchet MS",sans-serif';g.fillText('Lv '+level+' '+LV().name+'  '+Math.ceil(Math.max(0,raidT))+'s',552,40);if(t<2.5){txt('Level '+level+': '+LV().name,W/2,150,44);txt(LV().tip,W/2,184,18,'#bdb6a2')}
+  g.textAlign='right';g.fillStyle='#efe6d2';g.font='bold 22px "Trebuchet MS",sans-serif';g.fillText('Rescued '+rescued+' / '+QUOTA,W-16,34);g.font='13px "Trebuchet MS",sans-serif';g.fillText('Carrying '+P.f.length+'  (speed -'+Math.round(Math.min(60,3*P.f.length))+'%)   Lost '+lost+'   Kills '+kills,W-16,54);
+ }
+ g.restore();
+ if(S=='title'||S=='over'||paused){g.fillStyle='rgba(8,14,17,.78)';g.fillRect(0,0,W,H)}
+ if(S=='title'){txt('Operation Sky Guard',W/2,200,54);txt('Lead stranded civilians into the bunker before the bombers get them.',W/2,255,18);
+  txt('Walk over a civilian and they follow you. Each one slows you by 3% (max 60%).',W/2,300,16,'#bdb6a2');txt('Reach the glowing zone to drop off your whole group. Save '+QUOTA+' before the raid ends.',W/2,324,16,'#bdb6a2');
+  txt('Red rings mark bombs. Rubble blocks you but shields from blasts; mud halves your speed.',W/2,348,16,'#bdb6a2');txt('Move: WASD / arrows / hold touch    Shoot: Space    Dash: Shift    Pause: P',W/2,400,16);
+  txt('Press Enter or tap to start',W/2,460,24,'#6ee7d8');if(best)txt('Best win: '+best.toFixed(1)+'s',W/2,500,16,'#e9b44c')}
+ else if(S=='over'){txt(status=='VICTORY'?'Level '+level+' complete':status=='RETRY'?'Raid failed':'Game over',W/2,230,54,won?'#9be58b':'#ff5a36');txt(why,W/2,280,20);
+  txt('Rescued '+rescued+' / '+QUOTA+'   Lost '+lost+'   Kills '+kills+'   Time '+t.toFixed(1)+'s',W/2,325,18,'#bdb6a2');if(best)txt('Best win: '+best.toFixed(1)+'s',W/2,355,16,'#e9b44c');txt((status=='VICTORY'?'Press Enter or tap for level '+(level+1):'Press Enter or tap to retry level '+level),W/2,430,24,'#6ee7d8');txt('Press M for the menu',W/2,465,16,'#bdb6a2')}
+ else if(paused){txt('Paused',W/2,H/2,48);txt('P to resume, M for the menu',W/2,H/2+36,18,'#bdb6a2')}
+}
+
+try{makeBG()}catch(e){}
+let last=performance.now();
+function loop(n){const dt=Math.min(.05,(n-last)/1000);last=n;if(S=='play'&&!paused)update(dt);shake=Math.max(0,shake-dt);draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+
+function dash(){if(S=='play'&&!paused&&P.dash<=0){P.dashT=.22;P.dash=2.2;beep(300,.15,'sawtooth',.05)}}
+addEventListener('keydown',e=>{const k=e.key.length==1?e.key.toLowerCase():e.key;
+ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
+ if(k=='Shift')dash();else if(k=='p'&&S=='play')paused=!paused;else if(k=='m'&&(S=='over'||paused))showHome();else if((k=='Enter'||k=='r')&&S!='play')proceed();else keys[k]=true});
+addEventListener('keyup',e=>{keys[e.key.length==1?e.key.toLowerCase():e.key]=false});
+function pos(e){const r=c.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+c.addEventListener('pointerdown',e=>{if(S!='play'){proceed();return}if(paused){paused=false;return}ptr=pos(e);c.setPointerCapture(e.pointerId)});
+c.addEventListener('pointermove',e=>{if(ptr)ptr=pos(e)});
+addEventListener('pointerup',()=>{ptr=null});
+document.getElementById('dash').addEventListener('pointerdown',e=>{e.preventDefault();dash()});
+const fb=document.getElementById('fire');fb.addEventListener('pointerdown',e=>{e.preventDefault();keys[' ']=true});['pointerup','pointercancel','pointerleave'].forEach(v=>fb.addEventListener(v,()=>{keys[' ']=false}));
+if(best)document.getElementById('bestline').textContent='Best win: '+best.toFixed(1)+'s';
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&S=='play')paused=true});
+</script></body></html>
